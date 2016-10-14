@@ -1,0 +1,83 @@
+bundle agent insert_iptables_rules_if_not_present(chain,rule) 
+# @brief Make sure that an iptables rule exists in a certain chain,
+# and INSERT it if it does not
+# @param chain The chain to INSERT «rule» into
+# @param rule The rule to ensur is present in «chain»
+# 
+# Example:
+#
+# methods:
+#      "block_g_dns" usebundle => insert_iptables_rules_if_not_present("FORWARD", "-d 8.8.8.8 -j DROP" );
+#
+{
+  classes:
+    linux::
+      "rule_is_present" expression => returnszero("iptables -C ${chain} ${rule} > /dev/null 2>&1","useshell");
+
+  commands:
+    linux.!rule_is_present::
+      "${path[iptables]} -I ${chain} ${rule}";
+
+  reports:
+    linux.!rule_is_present::
+      "Rule «${rule} missing from chain ${chain}» so adding";
+}
+
+bundle agent ipset_iphash(ipset_name,ip_list)
+# @brief Make sure that an ipset of type iphash exists, and that it
+# contains a slist of ip addresses. The set's contents is always
+# converged to the list provided as arg2 regardless of
+# what was there before. If ipset is not present, it will be created
+# Only tested with redhat 
+#
+# @param ipset_name Name of ipset to create or operate on
+# @param ip_list Slist of ip-adresses to converge set contents into
+#
+#
+#
+# Example:
+#
+# methods:
+#      "docker_acl" usebundle => ipset_iphash(${name_of_ipset}, @(ip_list) );
+#
+{
+  vars:
+    redhat::
+      "sw_packages"         slist   => { "ipset" };
+      "ips_to_add"          slist   => { }, policy => "free"; # Default to empty list
+      "ips_to_del"          slist   => { }, policy => "free"; # Default to empty list
+      "ipset_list_output"   string  => execresult("/sbin/ipset list ${ipset_name}","useshell");
+      "current_ip_list"     slist   => splitstring(${current_list_string[1]},${const.endl},"100");
+      "ips_to_add"          slist   => difference(ip_list,current_ip_list);
+      "ips_to_del"          slist   => difference(current_ip_list,ip_list);
+
+  classes:
+    redhat::
+      "sw_ok"     expression => returnszero("/bin/rpm -q --quiet ${sw_packages}","noshell");
+    redhat.sw_ok::
+      "ipset_ok"  expression => returnszero("/sbin/ipset list ${ipset_name} > /dev/null 2>&1","useshell");
+      "found_ips" expression => regextract(".+Members:\n(\d.+)",${ipset_list_output},current_list_string);
+
+  packages:
+    "$(sw_packages)"
+      package_policy => "add",
+      package_method => yum;
+
+  commands:
+    redhat.!ipset_ok.sw_ok::
+      "/sbin/ipset create ${ipset_name} hash:ip";
+
+    redhat.ipset_ok.sw_ok::
+      "/sbin/ipset add ${ipset_name} ${ips_to_add}";
+
+      "/sbin/ipset del ${ipset_name} ${ips_to_del}";
+
+  reports:
+    redhat.ipset_ok.sw_ok::
+       "Wanted ${ips_to_add} is missing from ipset «${ipset_name}» so adding it";
+       "Unwanted ${ips_to_del} is present in ipset «${ipset_name}» so deleting it";
+
+    redhat.!ipset_ok.sw_ok::
+      "Ipset «${ipset_name}» did not exist, so created.";
+}
+
